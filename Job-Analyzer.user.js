@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkedIn and SEEK Job Analyzer
 // @namespace    http://tampermonkey.net/
-// @version      1.5
+// @version      1.6
 // @description  Automatically analyze LinkedIn and SEEK job postings to extract requirements, tech stack, and citizenship details
 // @author       lemontea
 // @match        https://*.linkedin.com/jobs/*
@@ -417,7 +417,7 @@
         "holding PR",
         "valid PR",
       ],
-      // Work authorization
+      // Work authorization (these should be treated as warnings, not exclusions)
       workAuth: [
         "Authorized to work",
         "Authorization to work",
@@ -508,111 +508,138 @@
       return false;
     }
 
-    // Flatten the categories for checking
-    const allTerms = [].concat(...Object.values(citizenshipTerms));
+    // Check each category with different severity levels
+    const categories = [
+      { name: "us", severity: "strict", terms: citizenshipTerms.us },
+      {
+        name: "australia",
+        severity: "strict",
+        terms: citizenshipTerms.australia,
+      },
+      { name: "general", severity: "strict", terms: citizenshipTerms.general },
+      { name: "pr", severity: "strict", terms: citizenshipTerms.pr },
+      {
+        name: "workAuth",
+        severity: "warning",
+        terms: citizenshipTerms.workAuth,
+      },
+      {
+        name: "security",
+        severity: "strict",
+        terms: citizenshipTerms.security,
+      },
+    ];
 
-    // Check for each term
-    for (const term of allTerms) {
-      // Skip PR-only checks if not in proper context
-      if (
-        term === "PR holder" ||
-        term === "PR status" ||
-        term === "hold PR" ||
-        term === "valid PR"
-      ) {
-        // Only check for standalone "PR" when in proper context
-        const prRegex =
-          /\b(PR)\b(?!\s*(?:agency|firm|professional|public relations|pull request|program|programme|project))/i;
-        const matches = [...text.matchAll(new RegExp(prRegex, "gi"))];
+    // Check each category
+    for (const category of categories) {
+      for (const term of category.terms) {
+        // Skip PR-only checks if not in proper context
+        if (
+          term === "PR holder" ||
+          term === "PR status" ||
+          term === "hold PR" ||
+          term === "valid PR"
+        ) {
+          // Only check for standalone "PR" when in proper context
+          const prRegex =
+            /\b(PR)\b(?!\s*(?:agency|firm|professional|public relations|pull request|program|programme|project))/i;
+          const matches = [...text.matchAll(new RegExp(prRegex, "gi"))];
 
-        for (const match of matches) {
-          const matchIndex = match.index;
+          for (const match of matches) {
+            const matchIndex = match.index;
 
-          // Check if this match should be excluded
-          if (shouldExclude(text, matchIndex, 2)) {
-            continue;
-          }
+            // Check if this match should be excluded
+            if (shouldExclude(text, matchIndex, 2)) {
+              continue;
+            }
 
-          // Additional context check for PR - look for job requirement context
-          const contextStart = Math.max(0, matchIndex - 100);
-          const contextEnd = Math.min(text.length, matchIndex + 2 + 100);
-          const contextText = text.substring(contextStart, contextEnd);
+            // Additional context check for PR - look for job requirement context
+            const contextStart = Math.max(0, matchIndex - 100);
+            const contextEnd = Math.min(text.length, matchIndex + 2 + 100);
+            const contextText = text.substring(contextStart, contextEnd);
 
-          // Look for job requirement indicators
-          const requirementIndicators = [
-            /\b(?:must|need|require|should|eligibility|eligible|candidate|applicant).*PR\b/i,
-            /\bPR\b.*(?:required|mandatory|essential|necessary|needed)/i,
-            /\b(?:citizen|citizenship|residency|resident).*PR\b/i,
-            /\bPR\b.*(?:citizen|citizenship|residency|resident)/i,
-          ];
+            // Look for job requirement indicators
+            const requirementIndicators = [
+              /\b(?:must|need|require|should|eligibility|eligible|candidate|applicant).*PR\b/i,
+              /\bPR\b.*(?:required|mandatory|essential|necessary|needed)/i,
+              /\b(?:citizen|citizenship|residency|resident).*PR\b/i,
+              /\bPR\b.*(?:citizen|citizenship|residency|resident)/i,
+            ];
 
-          let hasRequirementContext = false;
-          for (const indicator of requirementIndicators) {
-            if (indicator.test(contextText)) {
-              hasRequirementContext = true;
-              break;
+            let hasRequirementContext = false;
+            for (const indicator of requirementIndicators) {
+              if (indicator.test(contextText)) {
+                hasRequirementContext = true;
+                break;
+              }
+            }
+
+            if (hasRequirementContext) {
+              const context = getCleanContext(text, matchIndex, 2);
+              return {
+                found: true,
+                requirement: "PR (Permanent Resident)",
+                context: context,
+                severity: category.severity,
+              };
             }
           }
-
-          if (hasRequirementContext) {
-            const context = getCleanContext(text, matchIndex, 2);
-            return {
-              found: true,
-              requirement: "PR (Permanent Resident)",
-              context: context,
-            };
-          }
-        }
-        continue;
-      }
-
-      // Simple text search for other terms
-      if (text.toLowerCase().includes(term.toLowerCase())) {
-        // Find the context - extract sentence or phrase containing the term
-        const lowerText = text.toLowerCase();
-        const lowerTerm = term.toLowerCase();
-        const index = lowerText.indexOf(lowerTerm);
-
-        // Check if this match should be excluded
-        if (shouldExclude(text, index, term.length)) {
           continue;
         }
 
-        // Additional validation for Australian PR specifically
-        if (term === "Australian PR") {
-          // Look for actual job requirement context
-          const contextStart = Math.max(0, index - 100);
-          const contextEnd = Math.min(text.length, index + term.length + 100);
-          const contextText = text.substring(contextStart, contextEnd);
+        // Simple text search for other terms
+        if (text.toLowerCase().includes(term.toLowerCase())) {
+          // Find the context - extract sentence or phrase containing the term
+          const lowerText = text.toLowerCase();
+          const lowerTerm = term.toLowerCase();
+          const index = lowerText.indexOf(lowerTerm);
 
-          // Check if it's about permanent residency vs other meanings
-          const prRequirementPatterns = [
-            /\b(?:must|need|require|should|eligibility|eligible|candidate|applicant).*australian\s+pr\b/i,
-            /\baustralian\s+pr\b.*(?:required|mandatory|essential|necessary|needed)/i,
-            /\b(?:citizen|citizenship|residency|resident).*australian\s+pr\b/i,
-            /\baustralian\s+pr\b.*(?:citizen|citizenship|residency|resident)/i,
-            /\baustralian\s+(?:citizen|citizenship|permanent\s+resident|pr)\b.*(?:required|mandatory|essential|necessary|needed)/i,
-          ];
+          // Check if this match should be excluded
+          if (shouldExclude(text, index, term.length)) {
+            continue;
+          }
 
-          let hasRequirementContext = false;
-          for (const pattern of prRequirementPatterns) {
-            if (pattern.test(contextText)) {
-              hasRequirementContext = true;
-              break;
+          // Additional validation for Australian PR specifically
+          if (term === "Australian PR") {
+            // Look for actual job requirement context
+            const contextStart = Math.max(0, index - 100);
+            const contextEnd = Math.min(text.length, index + term.length + 100);
+            const contextText = text.substring(contextStart, contextEnd);
+
+            // Check if it's about permanent residency vs other meanings
+            const prRequirementPatterns = [
+              /\b(?:must|need|require|should|eligibility|eligible|candidate|applicant).*australian\s+pr\b/i,
+              /\baustralian\s+pr\b.*(?:required|mandatory|essential|necessary|needed)/i,
+              /\b(?:citizen|citizenship|residency|resident).*australian\s+pr\b/i,
+              /\baustralian\s+pr\b.*(?:citizen|citizenship|residency|resident)/i,
+              /\baustralian\s+(?:citizen|citizenship|permanent\s+resident|pr)\b.*(?:required|mandatory|essential|necessary|needed)/i,
+            ];
+
+            let hasRequirementContext = false;
+            for (const pattern of prRequirementPatterns) {
+              if (pattern.test(contextText)) {
+                hasRequirementContext = true;
+                break;
+              }
+            }
+
+            if (!hasRequirementContext) {
+              continue; // Skip this match as it's likely not a job requirement
             }
           }
 
-          if (!hasRequirementContext) {
-            continue; // Skip this match as it's likely not a job requirement
-          }
+          const context = getCleanContext(text, index, term.length);
+          return {
+            found: true,
+            requirement: term,
+            context: context,
+            severity: category.severity,
+          };
         }
-
-        const context = getCleanContext(text, index, term.length);
-        return { found: true, requirement: term, context: context };
       }
     }
 
-    return { found: false, requirement: null };
+    return { found: false, requirement: null, severity: null };
   }
 
   // Extract tech stack from job description
@@ -914,29 +941,39 @@
             </div>
         `;
 
-    // Citizenship section - using warning colors if found
+    // Citizenship section - using different colors based on severity
+    let sectionColor, borderColor, iconColor, iconSymbol;
+
+    if (!citizenshipInfo.found) {
+      // No requirements found - green
+      sectionColor = "#f7fbf7";
+      borderColor = "#2ecc71";
+      iconColor = "#2ecc71";
+      iconSymbol = "✓";
+    } else if (citizenshipInfo.severity === "warning") {
+      // Work authorization requirements - yellow
+      sectionColor = "#fffbf0";
+      borderColor = "#f39c12";
+      iconColor = "#f39c12";
+      iconSymbol = "?";
+    } else {
+      // Strict requirements (citizenship, PR, security clearance) - red
+      sectionColor = "#fff6f6";
+      borderColor = "#e74c3c";
+      iconColor = "#e74c3c";
+      iconSymbol = "✘";
+    }
+
     content += `
-            <div style="margin-bottom: 20px; background-color: ${
-              citizenshipInfo.found ? "#fff6f6" : "#f7fbf7"
-            }; border-left: 4px solid ${
-      citizenshipInfo.found ? "#e74c3c" : "#2ecc71"
-    }; padding: 15px; border-radius: 4px;">
+            <div style="margin-bottom: 20px; background-color: ${sectionColor}; border-left: 4px solid ${borderColor}; padding: 15px; border-radius: 4px;">
                 <h3 style="margin-top: 0; margin-bottom: 10px; color: #333; font-size: 15px; font-weight: 600;">Citizenship/PR</h3>
                 ${
                   citizenshipInfo.found
                     ? `<div>
-                        <p style="margin: 0 0 10px 0; color: #e74c3c;"><span style="font-weight: bold;">${
-                          citizenshipInfo.requirement
-                        }</span> ${
-                        citizenshipInfo.found
-                          ? '<span style="color:#e74c3c; font-size:18px;">✘</span>'
-                          : ""
-                      }</p>
-                        <p style="margin: 0; font-size: 12px; color: #666; font-style: italic;">"${
-                          citizenshipInfo.context
-                        }"</p>
+                        <p style="margin: 0 0 10px 0; color: ${iconColor};"><span style="font-weight: bold;">${citizenshipInfo.requirement}</span> <span style="color:${iconColor}; font-size:18px;">${iconSymbol}</span></p>
+                        <p style="margin: 0; font-size: 12px; color: #666; font-style: italic;">"${citizenshipInfo.context}"</p>
                     </div>`
-                    : `<p style="margin: 0; color: #2ecc71;">No specific requirements found <span style="font-size:18px;">✓</span></p>`
+                    : `<p style="margin: 0; color: ${iconColor};">No specific requirements found <span style="font-size:18px;">${iconSymbol}</span></p>`
                 }
             </div>
         `;
