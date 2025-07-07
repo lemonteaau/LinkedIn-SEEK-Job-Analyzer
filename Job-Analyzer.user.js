@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         LinkedIn and SEEK Job Analyzer
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  Automatically analyze LinkedIn and SEEK job postings to extract requirements, tech stack, and citizenship details
 // @author       lemontea
 // @match        https://*.linkedin.com/jobs/*
@@ -394,7 +394,10 @@
         "Australian citizen",
         "Australian citizenship",
         "Australian Permanent Resident",
-        "Australian PR",
+        "Australian permanent resident",
+        "Australian citizenship or permanent residency",
+        "Australian citizenship or PR",
+        "citizen or permanent resident of Australia",
       ],
       // Generic citizenship
       general: [
@@ -409,6 +412,10 @@
         "Permanent Residency",
         "PR holder",
         "PR status",
+        "hold PR",
+        "PR holder",
+        "holding PR",
+        "valid PR",
       ],
       // Work authorization
       workAuth: [
@@ -436,39 +443,119 @@
       ],
     };
 
+    // Exclusion patterns - contexts where PR/citizenship terms should NOT be considered requirements
+    const exclusionPatterns = [
+      // Company/organization descriptions
+      /\b(?:south\s+)?australian\s+(?:government|program|programme|initiative|company|organisation|organization|department|agency|project|scheme|service)/i,
+      /\b(?:south\s+)?australian\s+pr(?:ogram|ogramme|oject)/i,
+      /\blaunched\s+in\s+\d{4}.*australian/i,
+      /\b(?:the\s+)?alternative\s+is\s+a\s+(?:south\s+)?australian/i,
+
+      // PR in non-residency context
+      /\bpr\s+(?:agency|firm|company|team|department|marketing|campaign|strategy|professional|public relations)/i,
+      /\bpublic\s+relations\b/i,
+      /\bpress\s+release\b/i,
+      /\bpull\s+request\b/i,
+      /\bproject\s+(?:manager|management)/i,
+
+      // General company history/description patterns
+      /\b(?:company|organization|firm|business|agency).*(?:australian|founded|established|based)/i,
+      /\b(?:founded|established|based|located)\s+in\s+australia/i,
+      /\bmultinationals?\s+(?:in|across|throughout)\s+australia/i,
+    ];
+
+    // Helper function to get clean context around a match
+    function getCleanContext(text, index, termLength) {
+      let startPos = Math.max(0, index - 60);
+      let endPos = Math.min(text.length, index + termLength + 60);
+
+      // Adjust to word boundaries to avoid cutting words
+      if (startPos > 0) {
+        const beforeStartPos = text.substring(0, startPos);
+        const lastSpace = beforeStartPos.lastIndexOf(" ");
+        if (lastSpace !== -1) startPos = lastSpace + 1;
+      }
+
+      if (endPos < text.length) {
+        const afterEndPos = text.substring(endPos);
+        const firstSpace = afterEndPos.indexOf(" ");
+        if (firstSpace !== -1) endPos += firstSpace;
+      }
+
+      let context = text.substring(startPos, endPos).trim();
+
+      // Add ellipsis if we're not at the beginning/end
+      if (startPos > 0) context = "..." + context;
+      if (endPos < text.length) context = context + "...";
+
+      return context;
+    }
+
+    // Helper function to check if a match should be excluded
+    function shouldExclude(text, matchIndex, termLength) {
+      // Get a larger context around the match for exclusion checking
+      let contextStart = Math.max(0, matchIndex - 150);
+      let contextEnd = Math.min(text.length, matchIndex + termLength + 150);
+      const contextText = text.substring(contextStart, contextEnd);
+
+      // Check against exclusion patterns
+      for (const pattern of exclusionPatterns) {
+        if (pattern.test(contextText)) {
+          return true;
+        }
+      }
+
+      return false;
+    }
+
     // Flatten the categories for checking
     const allTerms = [].concat(...Object.values(citizenshipTerms));
 
     // Check for each term
     for (const term of allTerms) {
       // Skip PR-only checks if not in proper context
-      if (term === "PR holder" || term === "PR status") {
+      if (
+        term === "PR holder" ||
+        term === "PR status" ||
+        term === "hold PR" ||
+        term === "valid PR"
+      ) {
         // Only check for standalone "PR" when in proper context
         const prRegex =
-          /\b(PR)\b(?!\s*(?:agency|firm|professional|public relations|pull request))/i;
-        if (prRegex.test(text)) {
-          // Get context for PR mention
-          const match = prRegex.exec(text);
-          if (match) {
-            const matchIndex = match.index;
-            // Get context with word boundaries
-            let startPos = Math.max(0, matchIndex - 50);
-            let endPos = Math.min(text.length, matchIndex + 5 + 50);
+          /\b(PR)\b(?!\s*(?:agency|firm|professional|public relations|pull request|program|programme|project))/i;
+        const matches = [...text.matchAll(new RegExp(prRegex, "gi"))];
 
-            // Adjust to word boundaries
-            if (startPos > 0) {
-              const beforeStartPos = text.substring(0, startPos);
-              const lastSpace = beforeStartPos.lastIndexOf(" ");
-              if (lastSpace !== -1) startPos = lastSpace + 1;
+        for (const match of matches) {
+          const matchIndex = match.index;
+
+          // Check if this match should be excluded
+          if (shouldExclude(text, matchIndex, 2)) {
+            continue;
+          }
+
+          // Additional context check for PR - look for job requirement context
+          const contextStart = Math.max(0, matchIndex - 100);
+          const contextEnd = Math.min(text.length, matchIndex + 2 + 100);
+          const contextText = text.substring(contextStart, contextEnd);
+
+          // Look for job requirement indicators
+          const requirementIndicators = [
+            /\b(?:must|need|require|should|eligibility|eligible|candidate|applicant).*PR\b/i,
+            /\bPR\b.*(?:required|mandatory|essential|necessary|needed)/i,
+            /\b(?:citizen|citizenship|residency|resident).*PR\b/i,
+            /\bPR\b.*(?:citizen|citizenship|residency|resident)/i,
+          ];
+
+          let hasRequirementContext = false;
+          for (const indicator of requirementIndicators) {
+            if (indicator.test(contextText)) {
+              hasRequirementContext = true;
+              break;
             }
+          }
 
-            if (endPos < text.length) {
-              const afterEndPos = text.substring(endPos);
-              const firstSpace = afterEndPos.indexOf(" ");
-              if (firstSpace !== -1) endPos += firstSpace;
-            }
-
-            const context = text.substring(startPos, endPos);
+          if (hasRequirementContext) {
+            const context = getCleanContext(text, matchIndex, 2);
             return {
               found: true,
               requirement: "PR (Permanent Resident)",
@@ -486,25 +573,41 @@
         const lowerTerm = term.toLowerCase();
         const index = lowerText.indexOf(lowerTerm);
 
-        // Get some context (around 100 chars)
-        let startPos = Math.max(0, index - 50);
-        let endPos = Math.min(text.length, index + term.length + 50);
-
-        // Adjust to word boundaries to avoid cutting words
-        if (startPos > 0) {
-          const beforeStartPos = text.substring(0, startPos);
-          const lastSpace = beforeStartPos.lastIndexOf(" ");
-          if (lastSpace !== -1) startPos = lastSpace + 1;
+        // Check if this match should be excluded
+        if (shouldExclude(text, index, term.length)) {
+          continue;
         }
 
-        if (endPos < text.length) {
-          const afterEndPos = text.substring(endPos);
-          const firstSpace = afterEndPos.indexOf(" ");
-          if (firstSpace !== -1) endPos += firstSpace;
+        // Additional validation for Australian PR specifically
+        if (term === "Australian PR") {
+          // Look for actual job requirement context
+          const contextStart = Math.max(0, index - 100);
+          const contextEnd = Math.min(text.length, index + term.length + 100);
+          const contextText = text.substring(contextStart, contextEnd);
+
+          // Check if it's about permanent residency vs other meanings
+          const prRequirementPatterns = [
+            /\b(?:must|need|require|should|eligibility|eligible|candidate|applicant).*australian\s+pr\b/i,
+            /\baustralian\s+pr\b.*(?:required|mandatory|essential|necessary|needed)/i,
+            /\b(?:citizen|citizenship|residency|resident).*australian\s+pr\b/i,
+            /\baustralian\s+pr\b.*(?:citizen|citizenship|residency|resident)/i,
+            /\baustralian\s+(?:citizen|citizenship|permanent\s+resident|pr)\b.*(?:required|mandatory|essential|necessary|needed)/i,
+          ];
+
+          let hasRequirementContext = false;
+          for (const pattern of prRequirementPatterns) {
+            if (pattern.test(contextText)) {
+              hasRequirementContext = true;
+              break;
+            }
+          }
+
+          if (!hasRequirementContext) {
+            continue; // Skip this match as it's likely not a job requirement
+          }
         }
 
-        const context = text.substring(startPos, endPos);
-
+        const context = getCleanContext(text, index, term.length);
         return { found: true, requirement: term, context: context };
       }
     }
@@ -532,6 +635,17 @@
       "R",
       "MATLAB",
       "Perl",
+      "C",
+      "C++",
+      "C#",
+      "Clojure",
+      "Elixir",
+      "Erlang",
+      "F#",
+      "Groovy",
+      "Haskell",
+      "Julia",
+      "Lua",
 
       // Frontend
       "React",
